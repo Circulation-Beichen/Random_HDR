@@ -1,0 +1,186 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# --- 请替换为实际参数 ---
+file_path = r'C:\work_space\vscode\Task_Random_HDR\02_实验数据4的数据\空到地\120.raw'
+width = 640  # 示例宽度 (Example width)
+height = 512  # 示例高度 (Example height)
+
+pixel_dtype = np.uint16
+
+# --- 参数结束 ---
+
+# 计算每帧的字节数
+bytes_per_pixel = np.dtype(pixel_dtype).itemsize
+frame_size_bytes = width * height * bytes_per_pixel
+
+try:
+    with open(file_path, 'rb') as f:
+        # 读取第一帧数据
+        raw_data = f.read(frame_size_bytes)
+
+        if len(raw_data) < frame_size_bytes:
+            print(f"Error: File size is smaller than expected for one frame ({len(raw_data)} vs {frame_size_bytes} bytes).")
+        else:
+            # 将字节流转换为 NumPy 数组
+            image = np.frombuffer(raw_data, dtype=pixel_dtype)
+            
+            # 检查数组元素数量是否匹配
+            if image.size != width * height:
+                 print(f"Error: Read data size ({image.size} elements) does not match expected frame size ({width * height} elements).")
+            else:
+                image = image.reshape((height, width))
+
+                # --- 打印实际数据范围 ---
+                min_val = np.min(image)
+                max_val = np.max(image)
+                print(f"Image data range: min={min_val}, max={max_val}")
+                # --- 打印结束 ---
+
+                hist, bins = np.histogram(image.flatten(), bins=65536, range=[0, 65536])
+                
+                # --- 绘制原始数据直方图 ---
+                plt.figure(figsize=(10, 6))
+                plt.plot(bins[:-1], hist, lw=0.5)
+                plt.title('Original 16-bit Image Histogram')
+                plt.xlabel('Gray Level (0-65535)')
+                plt.ylabel('Pixel Count')
+                plt.grid(True)
+                # 尝试在绘制图像前显示直方图 (可能需要关闭此窗口才能看到最终图像)
+                plt.show()
+                # --- 绘制结束 ---
+
+                # --- 计算并可视化 FFT 幅度谱 ---
+                # 计算 2D FFT
+                fft_result = np.fft.fft2(image)
+                # 将零频移到中心
+                fft_shifted = np.fft.fftshift(fft_result)
+                # 计算幅度谱并进行对数缩放 (log(1+x) 避免 log(0))
+                magnitude_spectrum = np.log1p(np.abs(fft_shifted))
+                
+                # 显示幅度谱
+                plt.figure(figsize=(8, 8))
+                plt.imshow(magnitude_spectrum, cmap='viridis') # viridis 是常用的频谱 colormap
+                plt.title('FFT Magnitude Spectrum (Log Scale)')
+                plt.colorbar(label='Log Magnitude')
+                plt.axis('off')
+                # 尝试在绘制图像前显示频谱图 (可能需要关闭此窗口才能看到最终图像)
+                plt.show()
+                # --- FFT 结束 ---
+                
+                # --- 计算并模仿 MATLAB 脚本的预处理：16bit -> 8bit (min-max scaling) ---
+                # 使用之前计算的 min_val, max_val
+                if max_val > min_val:
+                    image_float = image.astype(np.float32)
+                    # 线性拉伸到 0-255
+                    image_8bit = ((image_float - min_val) / (max_val - min_val)) * 255.0
+                    # 转换回 uint8
+                    image_8bit = np.clip(image_8bit, 0, 255).astype(np.uint8)
+                else: # 如果图像均匀
+                    image_8bit = np.full_like(image, 128, dtype=np.uint8)
+                # --- 预处理结束 ---
+                
+                # --- 打印 8bit 图像范围 ---
+                print(f"Intermediate 8-bit image range: min={np.min(image_8bit)}, max={np.max(image_8bit)}")
+                # --- 打印结束 ---
+                
+                # --- 实现自适应 DPHE (基于 NiuBiPlus 逻辑，作用于 8bit 图像) ---
+                # 1. 获取参数和 8bit 直方图
+                height_8bit, width_8bit = image_8bit.shape
+                total_pixels = height_8bit * width_8bit
+                M = 256 # 8bit 图像灰度级数量
+                hist_8bit, _ = np.histogram(image_8bit.flatten(), bins=M, range=[0, M])
+                
+                # 2. 去除零统计值，获取非零直方图 N
+                non_zero_indices = hist_8bit > 0
+                N = hist_8bit[non_zero_indices]
+                L = len(N) # 非零统计值的数量
+                
+                # 3. 计算自适应上阈值 T_UP (滑动窗口找局部最大值)
+                n_window = 5 # 滑动窗口大小
+                half_n = n_window // 2
+                local_maxima = []
+                if L > 0: # 仅当存在非零计数时进行
+                    for s in range(L):
+                        win_start = max(0, s - half_n)
+                        win_end = min(L, s + half_n + 1) # Python 切片不包含 end
+                        window = N[win_start:win_end]
+                        center_val = N[s]
+                        # 检查是否为窗口中的唯一最大值
+                        if center_val == np.max(window) and np.sum(window == center_val) == 1:
+                            local_maxima.append(center_val)
+                
+                    if not local_maxima: # 如果未找到局部最大值
+                        T_UP = np.mean(N)
+                    else:
+                        T_UP = np.mean(local_maxima)
+                else: # 如果图像所有像素值相同
+                    T_UP = 0 # 或设为 total_pixels / M，但这里设 0 影响不大
+                
+                # 使用论文中建议的方式计算 T_DOWN (总像素数的百分比)
+                T_DOWN_percent = 0.075 # 例如 7.5%
+                # T_DOWN = total_pixels * T_DOWN_percent
+                T_DOWN_candidate = total_pixels * T_DOWN_percent
+
+                # --- 确保 T_DOWN < T_UP --- 
+                # 如果 T_UP > 0，将 T_DOWN 限制在 [1, T_UP * 0.8] 范围内
+                # 优先使用计算出的 T_DOWN_candidate，但不能超过 T_UP 的 80%
+                if T_UP > 0:
+                    max_allowed_T_DOWN = T_UP * 0.8
+                    T_DOWN = max(1.0, min(T_DOWN_candidate, max_allowed_T_DOWN))
+                else: # 如果 T_UP 是 0 或负数 (理论上不太可能，除非 N 为空或全负)
+                    T_DOWN = max(1.0, T_DOWN_candidate) # 至少为 1
+                # --- 调整结束 ---
+
+                # print(f"Adaptive DPHE Thresholds (8-bit): T_UP={T_UP:.2f}, T_DOWN={T_DOWN:.2f} (calculated as {T_DOWN_percent*100}% of total pixels)")
+                print(f"Adaptive DPHE Thresholds (8-bit): T_UP={T_UP:.2f}, T_DOWN={T_DOWN:.2f} (Initial candidate: {T_DOWN_candidate:.2f}, Adjusted if >= T_UP*0.8)")
+                
+                # 5. 修正 8bit 直方图 Pm
+                modified_hist_8bit = np.copy(hist_8bit).astype(np.float64)
+                modified_hist_8bit[hist_8bit >= T_UP] = T_UP
+                modified_hist_8bit[(hist_8bit > 0) & (hist_8bit <= T_DOWN)] = T_DOWN
+                
+                # 6. 计算修改后 8bit 直方图的 CDF 并归一化 (0-255)
+                cdf = np.cumsum(modified_hist_8bit)
+                cdf_max = cdf[-1]
+                
+                if cdf_max == 0: # 如果修改后直方图全为0 (理论上不太可能除非输入图像空白)
+                     enhanced_image_8bit = np.zeros_like(image_8bit)
+                else:
+                     # 归一化 CDF 作为查找表 (LUT)
+                     lut = np.floor((255 * cdf) / cdf_max) # 映射到 0-255
+                     lut = np.clip(lut, 0, 255).astype(np.uint8)
+                     
+                     # 7. 应用 LUT 到 8bit 图像
+                     enhanced_image_8bit = lut[image_8bit]
+                # --- 自适应 DPHE 结束 ---
+                
+                # --- 打印增强后图像范围 ---
+                print(f"Enhanced 8-bit image range: min={np.min(enhanced_image_8bit)}, max={np.max(enhanced_image_8bit)}")
+                # --- 打印结束 ---
+                
+                # --- 绘制处理后图像的直方图 ---
+                hist_enhanced, _ = np.histogram(enhanced_image_8bit.flatten(), bins=256, range=[0, 256])
+                plt.figure(figsize=(10, 6))
+                plt.plot(range(256), hist_enhanced, lw=0.5)
+                plt.title('Histogram of Enhanced 8-bit Image')
+                plt.xlabel('Gray Level (0-255)')
+                plt.ylabel('Pixel Count')
+                plt.grid(True)
+                # 尝试在绘制图像前显示直方图 (可能需要关闭此窗口)
+                plt.show()
+                # --- 绘制结束 ---
+
+                # --- 显示最终增强的 8bit 图像 ---
+                image_display = enhanced_image_8bit # 最终要显示的图像
+
+                plt.title('RAW Image Frame (Fixed DPHE)') 
+                # 显示自适应 DPHE 处理后的图像
+                plt.title('Enhanced Image (Adaptive DPHE on 8-bit)')
+                plt.axis('off') # 关闭坐标轴
+                plt.show()
+
+except FileNotFoundError:
+    print(f"Error: File not found at {file_path}")
+except Exception as e:
+    print(f"An error occurred: {e}")
