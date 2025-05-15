@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
+import os  # 导入os模块以支持递归扫描目录
+from scipy import stats # 导入scipy.stats用于计算SRCC和PLCC
 
 # --- 新增：伽马校正函数 ---
 def apply_gamma_correction(image_16bit, gamma=1.0):
@@ -119,12 +121,41 @@ def process_image(image,hist,upper_threshold,lower_threshold):
     # 5. 返回结果
     return enhanced_image_8bit
 
+# --- 新增：计算图像质量评价指标 ---
+def calculate_image_metrics(original_img, enhanced_img):
+    """
+    计算SRCC和PLCC图像质量评价指标
+    :param original_img: 原始图像
+    :param enhanced_img: 增强后的图像
+    :return: SRCC, PLCC值
+    """
+    # 确保图像尺寸相同
+    if original_img.shape != enhanced_img.shape:
+        # 如果增强后的图像是8位但原图是16位，需要将原图转换为8位进行比较
+        if original_img.dtype == np.uint16 and enhanced_img.dtype == np.uint8:
+            original_img = (original_img / 256).astype(np.uint8)
+    
+    # 将图像展平为1D数组
+    original_flat = original_img.flatten()
+    enhanced_flat = enhanced_img.flatten()
+    
+    # 计算SRCC (Spearman Rank Correlation Coefficient)
+    # SRCC评估秩序一致性(单调性)
+    srcc, _ = stats.spearmanr(original_flat, enhanced_flat)
+    
+    # 计算PLCC (Pearson Linear Correlation Coefficient)
+    # PLCC评估线性相关性
+    plcc, _ = stats.pearsonr(original_flat, enhanced_flat)
+    
+    return srcc, plcc
+# --- 计算图像质量评价指标结束 ---
 
 def enhance_image(image):
     # 计算直方图
     hist, bins = np.histogram(image.flatten(), bins=65536, range=[0, 65536])
     
-    # 显示原直方图
+    # 显示原直方图已被注释
+    """
     plt.figure(figsize=(10, 6))
     plt.plot(bins[:-1], hist, lw=0.5)
     plt.title('Original 16-bit Image Histogram')
@@ -132,16 +163,15 @@ def enhance_image(image):
     plt.ylabel('Pixel Count')
     plt.grid(True)
     plt.show()
+    """
 
     # 动态双平台增强 (Dynamic Dual-Platform Enhancement)
     upper_threshold = get_upper_threshold(hist)
     lower_threshold = get_lower_threshold(hist,upper_threshold)
-    #测试
-    # upper_threshold = 31212.22 
-    # lower_threshold = 5120.00 
     enhanced_image = process_image(image,hist,upper_threshold,lower_threshold)
 
-    # 显示增强后的直方图 (Display enhanced histogram)
+    # 显示增强后的直方图已被注释
+    """
     hist_enhanced, bins_enhanced = np.histogram(enhanced_image.flatten(), bins=256, range=[0, 256])
     plt.figure(figsize=(10, 6))
     plt.plot(range(256), hist_enhanced, lw=0.5, color='r')
@@ -150,55 +180,118 @@ def enhance_image(image):
     plt.ylabel('Pixel Count')
     plt.grid(True)
     plt.show()
+    """
 
     return enhanced_image
 
 if __name__ == "__main__":
-    # --- 请替换为实际参数 ---
-    file_path = r'C:\work_space\vscode\Task_Random_HDR\02_data\T10_200mk_3\000.raw'
-    # file_path = r'C:\work_space\vscode\Task_Random_HDR\02_data\T10_200mk_3\000.raw'
-    width = 1280  # 示例宽度 (Example width)
-    height = 1024  # 示例高度 (Example height)
+    # --- 图像参数设置 ---
+    # 定义可能的尺寸组合
+    possible_dimensions = [(640, 512), (1280, 1024)]
     gamma_value = 0.5 # 示例伽马值，可以调整 (例如 0.45, 0.5 用于提亮暗部, 2.2 用于模拟显示器)
-
     pixel_dtype = np.uint16
-
-    # 计算每帧的字节数
+    
+    # 要处理的根目录
+    root_dir = r'C:\work_space\vscode\Task_Random_HDR\02_data'
+    # 用于显示的特定图像（可以设置为None以不显示任何图像）
+    display_image_path = r'C:\work_space\vscode\Task_Random_HDR\02_data\T10_200mk_3\000.raw'
+    
+    # 计算不同尺寸下每帧的字节数
     bytes_per_pixel = np.dtype(pixel_dtype).itemsize
-    frame_size_bytes = width * height * bytes_per_pixel
-
-    with open(file_path, 'rb') as f:
-        # 读取第一帧数据
-        raw_data = f.read(frame_size_bytes)
-
-        # 将字节流转换为 NumPy 数组
-        image = np.frombuffer(raw_data, dtype=pixel_dtype)
-        image = image.reshape((height, width))
-
-        # --- 新增：应用伽马校正 ---
-        print(f"Applying Gamma correction with gamma={gamma_value}...")
-        gamma_corrected_image = apply_gamma_correction(image, gamma_value)
-        # --- 伽马校正结束 ---
-
-        # enhanced_image = enhance_image(image) # 原调用
-        enhanced_image = enhance_image(gamma_corrected_image) # 使用伽马校正后的图像
-        
-        plt.imshow(enhanced_image, cmap='gray')
-        plt.title('Final Enhanced Image') # 更新最终图像标题
-        plt.show()
-
-        # --- 新增：保存为 JPG --- 
-        output_jpg_filename = file_path.replace('.raw', '_enhanced.jpg')
-        # --- 同时保存为 PNG ---
-        output_png_filename = file_path.replace('.raw', '_enhanced.png')
+    frame_size_bytes_list = [width * height * bytes_per_pixel for width, height in possible_dimensions]
+    
+    # 查找所有.raw文件
+    raw_files = []
+    for dir_path, _, file_names in os.walk(root_dir):
+        for file_name in file_names:
+            if file_name.lower().endswith('.raw'):
+                raw_files.append(os.path.join(dir_path, file_name))
+    
+    print(f"找到 {len(raw_files)} 个.raw文件")
+    
+    # 记录用于显示的图像处理结果
+    display_original = None
+    display_processed = None
+    
+    # 处理所有文件
+    for i, file_path in enumerate(raw_files):
+        print(f"处理文件 {i+1}/{len(raw_files)}: {file_path}")
         try:
-            # JPG保存 - 使用matplotlib
-            plt.imsave(output_jpg_filename, enhanced_image, cmap='gray', format='jpg')
-            print(f"Enhanced image saved as: {output_jpg_filename}")
+            # 读取图像
+            success = False
+            with open(file_path, 'rb') as f:
+                raw_data = f.read()
+                file_size = len(raw_data)
+                
+                # 尝试不同的尺寸组合
+                for dim_index, (width, height) in enumerate(possible_dimensions):
+                    expected_size = width * height * bytes_per_pixel
+                    
+                    if file_size == expected_size:
+                        print(f"使用尺寸: {width}x{height}")
+                        image = np.frombuffer(raw_data, dtype=pixel_dtype).reshape((height, width))
+                        success = True
+                        break
+                
+                if not success:
+                    print(f"警告: 文件 {file_path} 大小({file_size}字节)不符合任何预期尺寸，跳过")
+                    print(f"预期尺寸: {frame_size_bytes_list}字节")
+                    continue
             
-            # PNG保存 - 使用OpenCV确保保存为单通道灰度图
-            cv2.imwrite(output_png_filename, enhanced_image)
-            print(f"Enhanced image also saved as single-channel PNG: {output_png_filename}")
+            # 是否为显示图像
+            is_display_image = (file_path.lower() == display_image_path.lower()) if display_image_path else False
+            
+            # --- 应用伽马校正 ---
+            print(f"应用伽马校正, gamma={gamma_value}...")
+            gamma_corrected_image = apply_gamma_correction(image, gamma_value)
+            # --- 伽马校正结束 ---
+            
+            # 应用DPHE增强
+            enhanced_image = enhance_image(gamma_corrected_image)
+            
+            # 如果是要显示的图像，保存原始和处理后的图像供最后显示
+            if is_display_image:
+                display_original = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                display_processed = enhanced_image.copy()
+                
+                # 这里保留了显示代码，但使用注释禁用
+                """
+                plt.imshow(enhanced_image, cmap='gray')
+                plt.title('Final Enhanced Image')
+                plt.show()
+                """
+            
+            # 计算SRCC和PLCC值
+            srcc, plcc = calculate_image_metrics(image, enhanced_image)
+            # 将SRCC和PLCC值格式化为字符串(保留3位小数)
+            metrics_str = f"_SRCC{srcc:.3f}_PLCC{plcc:.3f}"
+            # 在文件名中加入SRCC和PLCC
+            output_jpg_filename = file_path.replace('.raw', f'_enhanced{metrics_str}.jpg')
+            output_png_filename = file_path.replace('.raw', f'_enhanced{metrics_str}.png')
+            
+            try:
+                # JPG保存 - 使用matplotlib
+                plt.imsave(output_jpg_filename, enhanced_image, cmap='gray', format='jpg')
+                
+                # PNG保存 - 使用OpenCV确保保存为单通道灰度图
+                cv2.imwrite(output_png_filename, enhanced_image)
+                
+                print(f"保存图像: {output_jpg_filename} 和 {output_png_filename} (SRCC={srcc:.3f}, PLCC={plcc:.3f})")
+            except Exception as e:
+                print(f"保存图像时出错: {e}")
         except Exception as e:
-            print(f"Error saving JPG: {e}")
-        # --- 保存结束 ---
+            print(f"处理文件 {file_path} 出错: {e}")
+    
+    # 显示指定图像的处理结果
+    if display_original is not None and display_processed is not None:
+        # 这些代码被注释掉，按用户要求
+        """
+        cv2.imshow("Original 16-bit Image (Normalized)", display_original)
+        cv2.imshow("Processed DPHE", display_processed)
+        print("按任意键关闭窗口并继续...")
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+        """
+    
+    # 完成
+    print(f"所有 {len(raw_files)} 个文件处理完成")

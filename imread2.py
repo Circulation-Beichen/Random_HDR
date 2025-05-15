@@ -281,7 +281,7 @@ if __name__ == "__main__":
     # Result from Durand Tone Mapping
     plt.subplot(1, 3, 2)
     plt.imshow(enhanced_image_durand, cmap='gray')
-    plt.title(f'Durand Tone Mapped (8-bit)\nsp={s_spatial}, sr={s_range}, sc={s_compress}, db={d_boost}')
+    plt.title(f'双边滤波色调映射 (8-bit)\nsp={s_spatial}, sr={s_range}, sc={s_compress}, db={d_boost}')
     plt.axis('off')
     
     # Result from original DPHE method (optional, for comparison)
